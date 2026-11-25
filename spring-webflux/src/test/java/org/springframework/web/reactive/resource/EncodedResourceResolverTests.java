@@ -24,6 +24,8 @@ import java.util.List;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import org.springframework.cache.Cache;
 import org.springframework.cache.concurrent.ConcurrentMapCache;
@@ -133,6 +135,47 @@ public class EncodedResourceResolverTests {
 		assertThat(resolved.getFilename()).isEqualTo(getResource(file).getFilename());
 		boolean condition1 = resolved instanceof HttpResource;
 		assertThat(condition1).isFalse();
+	}
+
+	@ParameterizedTest
+	@ValueSource(strings = {"xgzip", "notgzip, deflate", "deflate;foo=gzip", "GZIPX"})
+	void resolveWithUnsupportedCodingDoesNotPoisonCache(String acceptEncoding, GzippedFiles gzippedFiles) {
+
+		// 1. Resolve with a coding that only contains a supported coding name
+
+		MockServerWebExchange exchange = MockServerWebExchange.from(
+				MockServerHttpRequest.get("").header("Accept-Encoding", acceptEncoding));
+
+		String file = "js/foo.js";
+		gzippedFiles.create(file);
+		Resource resolved = this.resolver.resolveResource(exchange, file, this.locations).block(TIMEOUT);
+
+		assertThat(resolved.getDescription()).isEqualTo(getResource(file).getDescription());
+		assertThat(resolved).isNotInstanceOf(HttpResource.class);
+
+		// 2. Resolve unencoded resource, must not be served from a poisoned cache entry
+
+		exchange = MockServerWebExchange.from(MockServerHttpRequest.get("/js/foo.js"));
+		resolved = this.resolver.resolveResource(exchange, file, this.locations).block(TIMEOUT);
+
+		assertThat(resolved.getDescription()).isEqualTo(getResource(file).getDescription());
+		assertThat(resolved).isNotInstanceOf(HttpResource.class);
+	}
+
+	@Test
+	void resolveGzippedWithCodingParameters(GzippedFiles gzippedFiles) {
+
+		MockServerWebExchange exchange = MockServerWebExchange.from(
+				MockServerHttpRequest.get("").header("Accept-Encoding", "deflate, GZIP ; q=0.8"));
+
+		String file = "js/foo.js";
+		gzippedFiles.create(file);
+		Resource resolved = this.resolver.resolveResource(exchange, file, this.locations).block(TIMEOUT);
+
+		assertThat(resolved.getDescription()).isEqualTo(getResource(file + ".gz").getDescription());
+		assertThat(resolved).isInstanceOf(HttpResource.class);
+		HttpHeaders headers = ((HttpResource) resolved).getResponseHeaders();
+		assertThat(headers.getFirst(HttpHeaders.CONTENT_ENCODING)).isEqualTo("gzip");
 	}
 
 	@Test  // SPR-13149
